@@ -69,6 +69,9 @@ app.use('/api/doctors', require('./routes/doctors'));
 app.use('/api/appointments', require('./routes/appointments'));
 app.use('/api/payments', require('./routes/payments'));
 app.use('/api/admin', require('./routes/admin'));
+app.use('/api/patient', require('./routes/patient'));
+app.use('/api/reviews', require('./routes/reviews'));
+
 
 const PORT = process.env.PORT || 5000;
 

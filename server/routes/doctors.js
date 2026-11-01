@@ -8,11 +8,13 @@ const {
   getMySlots,
   deleteSlot,
   addSlots, 
-  getEarningsDashboard 
+  getEarningsDashboard,
+  getDashboardStats
 } = require('../controllers/doctorController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 
 // Doctor only routes (put these before parametric routes to avoid conflicts)
+router.get('/dashboard-stats', protect, authorize('doctor'), getDashboardStats);
 router.get('/profile', protect, authorize('doctor'), getProfile);
 router.get('/profile/slots', protect, authorize('doctor'), getMySlots);
 router.delete('/slots/:id', protect, authorize('doctor'), deleteSlot);
@@ -25,3 +27,4 @@ router.get('/', getDoctors);
 router.get('/:id/slots', getDoctorSlots);
 
 module.exports = router;
+
