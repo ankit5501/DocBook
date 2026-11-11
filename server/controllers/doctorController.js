@@ -546,6 +546,23 @@ exports.getDashboardStats = async (req, res) => {
   }
 };
 
+const { matchDoctors } = require('../services/doctorMatchingService');
+
+// @desc Smart Doctor Matching based on patient symptoms, budget, urgency & clinical needs
+// @route POST /api/doctors/smart-match
+// @access Public
+exports.getSmartMatchDoctors = async (req, res) => {
+  try {
+    const preferences = req.body || {};
+    const result = await matchDoctors(preferences);
+    res.json(result);
+  } catch (err) {
+    console.error('getSmartMatchDoctors error:', err.message);
+    res.status(500).send('Server Error');
+  }
+};
+
+
 
 
 

@@ -143,6 +143,14 @@ app.use('/api/admin', require('./routes/admin'));
 app.use('/api/patient', require('./routes/patient'));
 app.use('/api/reviews', require('./routes/reviews'));
 app.use('/api/chat', require('./routes/chat'));
+app.use('/api/waitlist', require('./routes/waitlist'));
+app.use('/api/clinic-queue', require('./routes/clinicQueue'));
+
+const { expireUnclaimedOffers } = require('./services/waitlistService');
+// Auto-expire unclaimed waitlist offers every 30 seconds and roll over to next waiting patient
+setInterval(() => {
+  expireUnclaimedOffers(app).catch(err => console.error('Auto expire waitlist error:', err.message));
+}, 30000);
 
 
 

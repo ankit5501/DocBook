@@ -1,39 +1,59 @@
 const { pool } = require('../config/db');
+const { handleSlotFreed } = require('../services/waitlistService');
 
 // @desc Book an appointment
 // @route POST /api/appointments
 // @access Private (Patient)
 exports.bookAppointment = async (req, res) => {
+  const client = await pool.connect();
   try {
     const { doctor_id, slot_id, appointment_type } = req.body;
     const patient_id = req.user.id;
 
-    // Check if slot is available
-    const slotRes = await pool.query('SELECT * FROM slots WHERE id = $1 AND doctor_id = $2 AND is_booked = false', [slot_id, doctor_id]);
-    if (slotRes.rows.length === 0) {
-      return res.status(400).json({ message: 'Slot is not available' });
+    if (!doctor_id || !slot_id) {
+      return res.status(400).json({ message: 'Doctor ID and Slot ID are required' });
     }
+
+    // Begin transaction on dedicated client connection
+    await client.query('BEGIN');
+
+    // Concurrency protection: Lock the slot row atomically using SELECT ... FOR UPDATE
+    const slotRes = await client.query(
+      'SELECT * FROM slots WHERE id = $1 AND doctor_id = $2 FOR UPDATE',
+      [slot_id, doctor_id]
+    );
+
+    if (slotRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Slot not found for this practitioner' });
+    }
+
+    const slot = slotRes.rows[0];
+
+    // Atomically check availability inside the locked transaction
+    if (slot.is_booked) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ 
+        message: 'This slot has already been booked by another patient. Please choose another slot.' 
+      });
+    }
+
+    // Mark slot as booked atomically
+    await client.query('UPDATE slots SET is_booked = true WHERE id = $1', [slot_id]);
 
     const type = appointment_type === 'video' ? 'video' : 'in_person';
     const meeting_room_id = type === 'video' 
       ? `docbook-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`
       : null;
 
-    // Begin transaction
-    await pool.query('BEGIN');
-
-    // Create appointment
-    const aptRes = await pool.query(
-      'INSERT INTO appointments (patient_id, doctor_id, slot_id, appointment_type, meeting_room_id) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [patient_id, doctor_id, slot_id, type, meeting_room_id]
+    // Create appointment atomically inside transaction
+    const aptRes = await client.query(
+      'INSERT INTO appointments (patient_id, doctor_id, slot_id, appointment_type, meeting_room_id, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      [patient_id, doctor_id, slot_id, type, meeting_room_id, 'pending']
     );
     const appointment = aptRes.rows[0];
 
-
-    // Mark slot as booked
-    await pool.query('UPDATE slots SET is_booked = true WHERE id = $1', [slot_id]);
-
-    await pool.query('COMMIT');
+    await client.query('COMMIT');
 
     // Socket.io Notification to Doctor
     const io = req.app.get('io');
@@ -41,17 +61,19 @@ exports.bookAppointment = async (req, res) => {
     const doctorUserRes = await pool.query('SELECT user_id FROM doctors WHERE id = $1', [doctor_id]);
     if (doctorUserRes.rows.length > 0) {
       const doctorUserId = doctorUserRes.rows[0].user_id.toString();
-      const doctorSocketId = connectedUsers.get(doctorUserId);
-      if (doctorSocketId) {
+      const doctorSocketId = connectedUsers?.get(doctorUserId);
+      if (doctorSocketId && io) {
         io.to(doctorSocketId).emit('notification', { message: 'You have a new appointment booking!' });
       }
     }
 
     res.status(201).json(appointment);
   } catch (err) {
-    await pool.query('ROLLBACK');
-    console.error(err.message);
+    await client.query('ROLLBACK');
+    console.error('bookAppointment error:', err.message);
     res.status(500).send('Server Error');
+  } finally {
+    client.release();
   }
 };
 
@@ -135,54 +157,62 @@ exports.getDoctorAppointments = async (req, res) => {
 // @route PATCH /api/appointments/:id/status
 // @access Private (Doctor)
 exports.updateAppointmentStatus = async (req, res) => {
+  const client = await pool.connect();
   try {
     const { id } = req.params;
     const { status } = req.body; // 'accepted', 'rejected', 'completed'
 
-    let doctorRes = await pool.query('SELECT id FROM doctors WHERE user_id = $1', [req.user.id]);
+    let doctorRes = await client.query('SELECT id FROM doctors WHERE user_id = $1', [req.user.id]);
     if (doctorRes.rows.length === 0) {
-      doctorRes = await pool.query('INSERT INTO doctors (user_id) VALUES ($1) RETURNING id', [req.user.id]);
+      doctorRes = await client.query('INSERT INTO doctors (user_id) VALUES ($1) RETURNING id', [req.user.id]);
     }
     const doctor_id = doctorRes.rows[0].id;
 
-    // Begin transaction
-    await pool.query('BEGIN');
+    // Begin transaction on dedicated client
+    await client.query('BEGIN');
 
-    const aptRes = await pool.query(
+    const aptRes = await client.query(
       'UPDATE appointments SET status = $1 WHERE id = $2 AND doctor_id = $3 RETURNING *',
       [status, id, doctor_id]
     );
 
     if (aptRes.rows.length === 0) {
-      await pool.query('ROLLBACK');
+      await client.query('ROLLBACK');
       return res.status(404).json({ message: 'Appointment not found or unauthorized' });
     }
 
+    const apt = aptRes.rows[0];
+
     // If rejected, free the slot
     if (status === 'rejected') {
-      await pool.query('UPDATE slots SET is_booked = false WHERE id = $1', [aptRes.rows[0].slot_id]);
+      await client.query('UPDATE slots SET is_booked = false WHERE id = $1', [apt.slot_id]);
     }
 
     // If completed, finalize the offline payment
     if (status === 'completed') {
-      await pool.query(
+      await client.query(
         "UPDATE appointments SET payment_status = 'completed' WHERE id = $1",
         [id]
       );
-      await pool.query(
+      await client.query(
         "UPDATE payments SET status = 'completed' WHERE appointment_id = $1",
         [id]
       );
     }
 
-    await pool.query('COMMIT');
+    await client.query('COMMIT');
+
+    // If rejected and slot freed, notify waitlisted patients
+    if (status === 'rejected' && apt.slot_id) {
+      handleSlotFreed(apt.slot_id, doctor_id, req.app).catch(e => console.error('Waitlist trigger error:', e));
+    }
 
     // Socket.io Notification to Patient
     const io = req.app.get('io');
     const connectedUsers = req.app.get('connectedUsers');
-    const patientUserId = aptRes.rows[0].patient_id.toString();
+    const patientUserId = apt.patient_id.toString();
     const patientSocketId = connectedUsers?.get(patientUserId);
-    if (patientSocketId) {
+    if (patientSocketId && io) {
       io.to(patientSocketId).emit('notification', { message: `Your appointment status was updated to: ${status}` });
     }
 
@@ -190,9 +220,11 @@ exports.updateAppointmentStatus = async (req, res) => {
     const updatedApt = await pool.query('SELECT * FROM appointments WHERE id = $1', [id]);
     res.json(updatedApt.rows[0]);
   } catch (err) {
-    await pool.query('ROLLBACK');
+    await client.query('ROLLBACK');
     console.error('Update appointment status error:', err.message);
     res.status(500).send('Server Error');
+  } finally {
+    client.release();
   }
 };
 
@@ -208,58 +240,67 @@ exports.rescheduleAppointment = async (req, res) => {
     return res.status(400).json({ message: 'New slot ID is required' });
   }
 
+  const client = await pool.connect();
   try {
-    await pool.query('BEGIN');
+    await client.query('BEGIN');
 
-    // 1. Verify current appointment
-    const currentAptRes = await pool.query(
-      'SELECT * FROM appointments WHERE id = $1 AND patient_id = $2',
+    // 1. Verify and lock current appointment
+    const currentAptRes = await client.query(
+      'SELECT * FROM appointments WHERE id = $1 AND patient_id = $2 FOR UPDATE',
       [id, patient_id]
     );
 
     if (currentAptRes.rows.length === 0) {
-      await pool.query('ROLLBACK');
+      await client.query('ROLLBACK');
       return res.status(404).json({ message: 'Appointment not found or unauthorized' });
     }
 
     const currentApt = currentAptRes.rows[0];
 
     if (currentApt.status === 'cancelled' || currentApt.status === 'rejected' || currentApt.status === 'completed') {
-      await pool.query('ROLLBACK');
+      await client.query('ROLLBACK');
       return res.status(400).json({ message: `Cannot reschedule a ${currentApt.status} appointment` });
     }
 
     if (currentApt.slot_id === parseInt(new_slot_id, 10)) {
-      await pool.query('ROLLBACK');
+      await client.query('ROLLBACK');
       return res.status(400).json({ message: 'Selected slot is the same as the current slot' });
     }
 
-    // 2. Verify new slot belongs to the same doctor and is available
-    const newSlotRes = await pool.query(
-      'SELECT * FROM slots WHERE id = $1 AND doctor_id = $2 AND is_booked = false',
+    // 2. Lock new slot using SELECT ... FOR UPDATE to prevent race conditions
+    const newSlotRes = await client.query(
+      'SELECT * FROM slots WHERE id = $1 AND doctor_id = $2 FOR UPDATE',
       [new_slot_id, currentApt.doctor_id]
     );
 
     if (newSlotRes.rows.length === 0) {
-      await pool.query('ROLLBACK');
-      return res.status(400).json({ message: 'The selected slot is no longer available' });
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'The selected slot was not found' });
+    }
+
+    if (newSlotRes.rows[0].is_booked) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ message: 'The selected slot has already been booked. Please choose another.' });
     }
 
     const oldSlotId = currentApt.slot_id;
 
     // 3. Free old slot
-    await pool.query('UPDATE slots SET is_booked = false WHERE id = $1', [oldSlotId]);
+    await client.query('UPDATE slots SET is_booked = false WHERE id = $1', [oldSlotId]);
 
     // 4. Reserve new slot
-    await pool.query('UPDATE slots SET is_booked = true WHERE id = $1', [new_slot_id]);
+    await client.query('UPDATE slots SET is_booked = true WHERE id = $1', [new_slot_id]);
 
     // 5. Update appointment with new slot
-    const updatedAptRes = await pool.query(
+    const updatedAptRes = await client.query(
       'UPDATE appointments SET slot_id = $1 WHERE id = $2 RETURNING *',
       [new_slot_id, id]
     );
 
-    await pool.query('COMMIT');
+    await client.query('COMMIT');
+
+    // 6. Offer the freed old slot to eligible waitlisted patients immediately
+    handleSlotFreed(oldSlotId, currentApt.doctor_id, req.app).catch(e => console.error('Waitlist trigger error:', e));
 
     // Socket notification to doctor
     const io = req.app.get('io');
@@ -268,7 +309,7 @@ exports.rescheduleAppointment = async (req, res) => {
     if (doctorUserRes.rows.length > 0) {
       const doctorUserId = doctorUserRes.rows[0].user_id.toString();
       const doctorSocketId = connectedUsers?.get(doctorUserId);
-      if (doctorSocketId) {
+      if (doctorSocketId && io) {
         io.to(doctorSocketId).emit('notification', {
           message: `Appointment #APT-${id} has been rescheduled by the patient.`
         });
@@ -280,9 +321,11 @@ exports.rescheduleAppointment = async (req, res) => {
       appointment: updatedAptRes.rows[0]
     });
   } catch (err) {
-    await pool.query('ROLLBACK');
+    await client.query('ROLLBACK');
     console.error('Reschedule error:', err.message);
     res.status(500).send('Server Error');
+  } finally {
+    client.release();
   }
 };
 
@@ -432,30 +475,46 @@ exports.getPrescription = async (req, res) => {
 // @route DELETE /api/appointments/:id
 // @access Private (Patient)
 exports.cancelAppointment = async (req, res) => {
+  const client = await pool.connect();
   try {
     const { id } = req.params;
     
-    // Begin transaction
-    await pool.query('BEGIN');
+    // Begin transaction on dedicated client
+    await client.query('BEGIN');
     
-    const aptRes = await pool.query(
-      'UPDATE appointments SET status = $1 WHERE id = $2 AND patient_id = $3 RETURNING *',
-      ['cancelled', id, req.user.id]
+    const aptRes = await client.query(
+      'SELECT * FROM appointments WHERE id = $1 AND patient_id = $2 FOR UPDATE',
+      [id, req.user.id]
     );
 
     if (aptRes.rows.length === 0) {
-      await pool.query('ROLLBACK');
+      await client.query('ROLLBACK');
       return res.status(404).json({ message: 'Appointment not found or unauthorized' });
     }
 
-    // Free the slot
-    await pool.query('UPDATE slots SET is_booked = false WHERE id = $1', [aptRes.rows[0].slot_id]);
+    const apt = aptRes.rows[0];
 
-    await pool.query('COMMIT');
+    await client.query(
+      "UPDATE appointments SET status = 'cancelled' WHERE id = $1",
+      [id]
+    );
+
+    // Free the slot in the transaction
+    await client.query('UPDATE slots SET is_booked = false WHERE id = $1', [apt.slot_id]);
+
+    await client.query('COMMIT');
+
+    // Notify waitlisted patients immediately that this slot has opened up
+    if (apt.slot_id && apt.doctor_id) {
+      handleSlotFreed(apt.slot_id, apt.doctor_id, req.app).catch(e => console.error('Waitlist trigger error:', e));
+    }
+
     res.json({ message: 'Appointment cancelled successfully' });
   } catch (err) {
-    await pool.query('ROLLBACK');
-    console.error(err.message);
+    await client.query('ROLLBACK');
+    console.error('Cancel appointment error:', err.message);
     res.status(500).send('Server Error');
+  } finally {
+    client.release();
   }
 };

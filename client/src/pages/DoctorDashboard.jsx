@@ -43,6 +43,19 @@ const DoctorDashboard = () => {
   // Real-Time Consultation Chat State
   const [activeChatApt, setActiveChatApt] = useState(null);
 
+  // Live Clinic Queue & Token Coordination State
+  const [liveQueue, setLiveQueue] = useState({
+    currently_serving: null,
+    waiting_count: 0,
+    completed_count: 0,
+    rolling_average_pace_minutes: 12,
+    tokens: []
+  });
+  const [callingNext, setCallingNext] = useState(false);
+  const [completingConsult, setCompletingConsult] = useState(false);
+
+  // Priority Waitlist Queue State
+  const [waitlistQueue, setWaitlistQueue] = useState([]);
 
   // Aggregation State directly from PostgreSQL DB
   const [dashboardStats, setDashboardStats] = useState({
@@ -77,9 +90,13 @@ const DoctorDashboard = () => {
 
   useEffect(() => {
     fetchDashboardData();
+    fetchLiveQueue();
+    fetchWaitlistQueue();
 
     const handleNotification = () => {
       fetchDashboardData();
+      fetchLiveQueue();
+      fetchWaitlistQueue();
     };
 
     window.addEventListener('new-notification', handleNotification);
@@ -87,6 +104,65 @@ const DoctorDashboard = () => {
       window.removeEventListener('new-notification', handleNotification);
     };
   }, []);
+
+  const fetchLiveQueue = async () => {
+    try {
+      const res = await api.get('/clinic-queue/doctor/live');
+      if (res.data) setLiveQueue(res.data);
+    } catch (err) {
+      console.warn('Could not load live clinic queue:', err.message);
+    }
+  };
+
+  const fetchWaitlistQueue = async () => {
+    try {
+      const res = await api.get('/waitlist/doctor');
+      if (res.data) setWaitlistQueue(res.data);
+    } catch (err) {
+      console.warn('Could not load doctor waitlist queue:', err.message);
+    }
+  };
+
+  const handleCallNextPatient = async () => {
+    setCallingNext(true);
+    try {
+      const res = await api.post('/clinic-queue/call-next');
+      toast.success(res.data.message || 'Next patient called!');
+      await fetchLiveQueue();
+      await fetchDashboardData();
+    } catch (err) {
+      console.error(err);
+      toast.error(err.response?.data?.message || 'Failed to call next patient');
+    } finally {
+      setCallingNext(false);
+    }
+  };
+
+  const handleCompleteCurrentConsultation = async () => {
+    setCompletingConsult(true);
+    try {
+      const res = await api.post('/clinic-queue/complete');
+      toast.success(res.data.message || 'Consultation completed!');
+      await fetchLiveQueue();
+      await fetchDashboardData();
+    } catch (err) {
+      console.error(err);
+      toast.error(err.response?.data?.message || 'Failed to complete consultation');
+    } finally {
+      setCompletingConsult(false);
+    }
+  };
+
+  const handleMarkNoShow = async (tokenId) => {
+    try {
+      await api.post(`/clinic-queue/${tokenId}/no-show`);
+      toast.info('Marked patient as no-show');
+      await fetchLiveQueue();
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to mark no-show');
+    }
+  };
 
   const fetchDashboardData = async () => {
     setLoading(true);
@@ -357,6 +433,22 @@ const DoctorDashboard = () => {
               }`}
             >
               📅 Appointments ({appointments.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('queue')}
+              className={`px-4 py-2 rounded-lg font-bold text-xs sm:text-sm transition duration-200 cursor-pointer ${
+                activeTab === 'queue' ? 'bg-white text-indigo-950 shadow-md font-extrabold' : 'text-indigo-200 hover:text-white'
+              }`}
+            >
+              🏥 Live Clinic Queue ({liveQueue.waiting_count || 0})
+            </button>
+            <button
+              onClick={() => setActiveTab('waitlist')}
+              className={`px-4 py-2 rounded-lg font-bold text-xs sm:text-sm transition duration-200 cursor-pointer ${
+                activeTab === 'waitlist' ? 'bg-white text-indigo-950 shadow-md font-extrabold' : 'text-indigo-200 hover:text-white'
+              }`}
+            >
+              📋 Waitlist ({waitlistQueue.length || 0})
             </button>
             <button
               onClick={() => setActiveTab('profile')}
@@ -1157,6 +1249,303 @@ const DoctorDashboard = () => {
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* TAB 5: LIVE CLINIC QUEUE & TOKEN COORDINATION */}
+          {activeTab === 'queue' && (
+            <div className="space-y-6">
+              {/* Live Status TV Display */}
+              <div className="bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 rounded-2xl p-6 sm:p-8 text-white border border-indigo-900/50 shadow-2xl">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-indigo-900/50">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="w-3 h-3 rounded-full bg-emerald-400 animate-ping"></span>
+                      <span className="text-xs font-black uppercase tracking-widest text-emerald-400">
+                        Live Clinic Flow Coordination
+                      </span>
+                    </div>
+                    <h2 className="text-2xl sm:text-3xl font-black mt-1">
+                      Today's Clinic Queue Board
+                    </h2>
+                    <p className="text-xs text-indigo-200/80 mt-1">
+                      Real-time digital token tracker. Advancing queue notifies called patients and warns upcoming patients when their turn approaches.
+                    </p>
+                  </div>
+
+                  {/* Top Control Buttons */}
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      onClick={handleCallNextPatient}
+                      disabled={callingNext || liveQueue.waiting_count === 0}
+                      className="px-5 py-3 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-black text-xs sm:text-sm rounded-xl shadow-lg transition duration-200 flex items-center gap-2 cursor-pointer active:scale-95 disabled:opacity-50"
+                    >
+                      {callingNext ? 'Calling...' : '▶️ Call Next Patient'}
+                    </button>
+
+                    {liveQueue.currently_serving && (
+                      <button
+                        onClick={handleCompleteCurrentConsultation}
+                        disabled={completingConsult}
+                        className="px-4 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xs sm:text-sm rounded-xl shadow-md transition duration-200 flex items-center gap-1.5 cursor-pointer active:scale-95 disabled:opacity-50"
+                      >
+                        {completingConsult ? 'Completing...' : '✅ Complete Consultation'}
+                      </button>
+                    )}
+
+                    <button
+                      onClick={fetchLiveQueue}
+                      className="px-3.5 py-3 bg-white/10 hover:bg-white/20 text-white font-bold text-xs rounded-xl transition cursor-pointer"
+                    >
+                      🔄 Refresh
+                    </button>
+                  </div>
+                </div>
+
+                {/* Coordination TV Cards Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-6">
+                  {/* Currently Serving Display */}
+                  <div className="md:col-span-2 bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-md">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-indigo-300 block mb-2">
+                      Currently In Consultation Room
+                    </span>
+
+                    {liveQueue.currently_serving ? (
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div>
+                          <div className="flex items-center gap-3">
+                            <span className="text-4xl sm:text-5xl font-black font-mono tracking-tight text-emerald-400">
+                              {liveQueue.currently_serving.token_code}
+                            </span>
+                            <div>
+                              <h3 className="text-lg font-black text-white">
+                                {liveQueue.currently_serving.patient_name}
+                              </h3>
+                              <p className="text-xs text-indigo-200 font-medium">
+                                Scheduled slot: {liveQueue.currently_serving.slot_start_time?.substring(0, 5)} - {liveQueue.currently_serving.slot_end_time?.substring(0, 5)}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="bg-emerald-500/10 border border-emerald-500/30 px-4 py-3 rounded-xl text-left sm:text-right">
+                          <span className="text-[10px] uppercase font-bold text-emerald-300 block">
+                            Duration in Room
+                          </span>
+                          <span className="text-xl font-black text-emerald-400 font-mono">
+                            {liveQueue.currently_serving.consult_elapsed_minutes !== undefined 
+                              ? `${Math.max(0, parseInt(liveQueue.currently_serving.consult_elapsed_minutes, 10))} mins`
+                              : 'Just started'}
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="py-6 text-center text-indigo-300/80">
+                        <span className="text-3xl block mb-2">🩺</span>
+                        <p className="font-bold text-sm">Consultation room is ready for the next patient</p>
+                        <p className="text-xs text-indigo-400/60 mt-0.5">Click "Call Next Patient" above to buzz in Token #1</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Rolling Queue Pace & Metrics */}
+                  <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-md flex flex-col justify-between">
+                    <div>
+                      <span className="text-[10px] font-black uppercase tracking-widest text-indigo-300 block mb-2">
+                        Actual Queue Progress Pace
+                      </span>
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-3xl font-black font-mono text-white">
+                          ~{liveQueue.rolling_average_pace_minutes || 12}
+                        </span>
+                        <span className="text-xs font-bold text-indigo-200">mins / consultation</span>
+                      </div>
+                      <p className="text-[11px] text-indigo-300/60 mt-1">
+                        Dynamic rolling pace automatically calibrated from today's completed patient consultations.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-white/10 text-xs">
+                      <div className="bg-black/20 p-2.5 rounded-lg text-center">
+                        <span className="text-[10px] text-indigo-300 font-bold block">Waiting</span>
+                        <span className="text-lg font-black text-amber-400">{liveQueue.waiting_count || 0}</span>
+                      </div>
+                      <div className="bg-black/20 p-2.5 rounded-lg text-center">
+                        <span className="text-[10px] text-indigo-300 font-bold block">Completed</span>
+                        <span className="text-lg font-black text-emerald-400">{liveQueue.completed_count || 0}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Checked-in Patients Table */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                <div className="flex justify-between items-center mb-4 pb-3 border-b border-slate-100">
+                  <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
+                    <span>👥</span> Today's Checked-in Token Queue ({liveQueue.tokens?.length || 0})
+                  </h3>
+                  <span className="text-xs text-slate-500 font-medium">Sorted by arrival sequence</span>
+                </div>
+
+                {!liveQueue.tokens || liveQueue.tokens.length === 0 ? (
+                  <div className="text-center py-12 px-4 bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
+                    <span className="text-3xl">🎫</span>
+                    <p className="text-sm font-bold text-slate-600 mt-2">No patients have checked in yet today.</p>
+                    <p className="text-xs text-slate-400 mt-0.5">When patients arrive at the clinic and check in, their digital tokens will appear here instantly.</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="bg-slate-50 text-slate-500 font-black uppercase tracking-wider border-b border-slate-200">
+                          <th className="py-3 px-4">Token #</th>
+                          <th className="py-3 px-4">Patient Name</th>
+                          <th className="py-3 px-4">Slot Time</th>
+                          <th className="py-3 px-4">Check-In Time</th>
+                          <th className="py-3 px-4">Wait Time</th>
+                          <th className="py-3 px-4">Status</th>
+                          <th className="py-3 px-4 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 font-semibold">
+                        {liveQueue.tokens.map((t) => (
+                          <tr key={t.id} className={t.status === 'in_consultation' ? 'bg-emerald-50/50 font-bold' : ''}>
+                            <td className="py-3.5 px-4 font-mono font-black text-slate-900 text-sm">
+                              {t.token_code}
+                            </td>
+                            <td className="py-3.5 px-4">
+                              <p className="font-black text-slate-900">{t.patient_name}</p>
+                              <p className="text-[11px] text-slate-400 font-normal">{t.patient_email}</p>
+                            </td>
+                            <td className="py-3.5 px-4 text-slate-600 font-mono">
+                              {t.slot_start_time?.substring(0, 5)} - {t.slot_end_time?.substring(0, 5)}
+                            </td>
+                            <td className="py-3.5 px-4 text-slate-500">
+                              {new Date(t.check_in_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </td>
+                            <td className="py-3.5 px-4 font-mono">
+                              {t.status === 'completed' 
+                                ? `${t.actual_duration_minutes || 0}m visit` 
+                                : (t.status === 'in_consultation' 
+                                    ? 'In Room' 
+                                    : `~${t.estimated_wait_minutes} mins`)}
+                            </td>
+                            <td className="py-3.5 px-4">
+                              <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border ${
+                                t.status === 'in_consultation'
+                                  ? 'bg-emerald-100 text-emerald-800 border-emerald-300 animate-pulse'
+                                  : t.status === 'completed'
+                                  ? 'bg-slate-100 text-slate-700 border-slate-200'
+                                  : t.status === 'no_show'
+                                  ? 'bg-rose-100 text-rose-800 border-rose-200'
+                                  : 'bg-blue-50 text-blue-800 border-blue-200'
+                              }`}>
+                                {t.status === 'in_consultation' ? 'In Consultation' : t.status}
+                              </span>
+                            </td>
+                            <td className="py-3.5 px-4 text-right">
+                              {t.status === 'waiting' && (
+                                <button
+                                  onClick={() => handleMarkNoShow(t.id)}
+                                  className="text-xs text-rose-600 hover:text-rose-800 font-bold hover:underline cursor-pointer"
+                                >
+                                  Mark No-Show
+                                </button>
+                              )}
+                              {t.status === 'in_consultation' && (
+                                <button
+                                  onClick={handleCompleteCurrentConsultation}
+                                  className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold text-xs cursor-pointer shadow-sm"
+                                >
+                                  Done ✓
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 6: DOCTOR WAITLIST QUEUE */}
+          {activeTab === 'waitlist' && (
+            <div className="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 shadow-sm">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-6 mb-6 border-b border-slate-100 gap-4">
+                <div>
+                  <h2 className="text-xl font-black text-slate-900 tracking-tight flex items-center gap-2">
+                    <span>📋</span> Clinic Cancellation Waitlist Queue ({waitlistQueue.length})
+                  </h2>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    Patients waiting for appointment cancellations in your clinic. When an appointment is cancelled, the system automatically offers the freed slot to the highest-priority patient.
+                  </p>
+                </div>
+                <button
+                  onClick={fetchWaitlistQueue}
+                  className="px-3.5 py-2 border border-slate-200 text-slate-700 rounded-lg text-xs font-bold hover:bg-slate-50 transition cursor-pointer self-start sm:self-center"
+                >
+                  🔄 Refresh Waitlist
+                </button>
+              </div>
+
+              {waitlistQueue.length === 0 ? (
+                <div className="text-center py-16 px-4 bg-slate-50/50 rounded-2xl border-2 border-dashed border-slate-200">
+                  <span className="text-4xl">📋</span>
+                  <h3 className="text-base font-black text-slate-900 mt-3">No patients currently on your waitlist</h3>
+                  <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+                    When your schedule fills up, patients who cannot find open slots will appear here and be automatically queued for cancellations.
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="bg-slate-50 text-slate-500 font-black uppercase tracking-wider border-b border-slate-200">
+                        <th className="py-3 px-4">Patient Name</th>
+                        <th className="py-3 px-4">Contact Email</th>
+                        <th className="py-3 px-4">Preferred Date</th>
+                        <th className="py-3 px-4">Preferred Mode</th>
+                        <th className="py-3 px-4">Joined Queue</th>
+                        <th className="py-3 px-4">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 font-semibold">
+                      {waitlistQueue.map((w) => (
+                        <tr key={w.id} className={w.status === 'offered' ? 'bg-emerald-50/50' : ''}>
+                          <td className="py-3.5 px-4 font-black text-slate-900">
+                            {w.patient_name}
+                          </td>
+                          <td className="py-3.5 px-4 text-slate-500">
+                            {w.patient_email}
+                          </td>
+                          <td className="py-3.5 px-4 text-slate-700 font-medium">
+                            {w.preferred_date ? new Date(w.preferred_date).toLocaleDateString() : 'Any upcoming date'}
+                          </td>
+                          <td className="py-3.5 px-4 capitalize text-slate-600">
+                            {w.preferred_type || 'any'}
+                          </td>
+                          <td className="py-3.5 px-4 text-slate-400 font-mono text-[11px]">
+                            {new Date(w.created_at).toLocaleDateString()} {new Date(w.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </td>
+                          <td className="py-3.5 px-4">
+                            <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border ${
+                              w.status === 'offered'
+                                ? 'bg-emerald-100 text-emerald-800 border-emerald-300 animate-pulse'
+                                : 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                            }`}>
+                              {w.status === 'offered' ? 'Slot Offered (15m window)' : 'Waiting in Queue'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
         </>

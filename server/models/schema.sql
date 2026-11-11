@@ -101,6 +101,51 @@ CREATE TABLE IF NOT EXISTS consultation_messages (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Waitlist Table
+CREATE TABLE IF NOT EXISTS waitlists (
+    id SERIAL PRIMARY KEY,
+    patient_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    doctor_id INTEGER REFERENCES doctors(id) ON DELETE CASCADE,
+    preferred_date DATE,
+    preferred_type VARCHAR(20) DEFAULT 'any', -- 'any', 'in_person', 'video'
+    status VARCHAR(20) DEFAULT 'waiting', -- 'waiting', 'offered', 'claimed', 'expired', 'cancelled'
+    offered_slot_id INTEGER REFERENCES slots(id) ON DELETE SET NULL,
+    offer_expires_at TIMESTAMP,
+    notification_sent_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Clinic Tokens for Live Queue Coordination
+CREATE TABLE IF NOT EXISTS clinic_tokens (
+    id SERIAL PRIMARY KEY,
+    appointment_id INTEGER UNIQUE REFERENCES appointments(id) ON DELETE CASCADE,
+    doctor_id INTEGER REFERENCES doctors(id) ON DELETE CASCADE,
+    patient_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    date DATE NOT NULL,
+    token_number INTEGER NOT NULL,
+    token_code VARCHAR(30) NOT NULL,
+    status VARCHAR(20) DEFAULT 'waiting', -- 'waiting', 'in_consultation', 'completed', 'cancelled', 'no_show'
+    check_in_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    called_at TIMESTAMP,
+    consultation_start_time TIMESTAMP,
+    consultation_end_time TIMESTAMP,
+    estimated_wait_minutes INTEGER DEFAULT 0,
+    actual_duration_minutes INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for performance & query responsiveness
+CREATE INDEX IF NOT EXISTS idx_waitlists_doc_status ON waitlists(doctor_id, status);
+CREATE INDEX IF NOT EXISTS idx_waitlists_patient ON waitlists(patient_id);
+CREATE INDEX IF NOT EXISTS idx_clinic_tokens_doc_date ON clinic_tokens(doctor_id, date);
+CREATE INDEX IF NOT EXISTS idx_clinic_tokens_patient ON clinic_tokens(patient_id);
+
+-- Prevent double booking at the DB level for active appointments
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_active_slot_booking 
+ON appointments (slot_id) 
+WHERE status NOT IN ('cancelled', 'rejected');
+
 -- Migration Queries for existing databases
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT FALSE;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20) DEFAULT 'online';

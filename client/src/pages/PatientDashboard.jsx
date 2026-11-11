@@ -6,9 +6,17 @@ import { downloadPrescriptionAsPDF } from '../utils/prescriptionPdf';
 import ConsultationChatModal from '../components/ConsultationChatModal';
 
 const PatientDashboard = () => {
-  const [activeTab, setActiveTab] = useState('appointments'); // 'appointments' or 'health-profile'
+  const [activeTab, setActiveTab] = useState('appointments'); // 'appointments', 'waitlist', or 'health-profile'
   const [appointments, setAppointments] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  // Live Clinic Tokens & Queue State
+  const [tokens, setTokens] = useState({}); // appointmentId -> tokenStatus
+  const [checkingInId, setCheckingInId] = useState(null);
+
+  // Priority Waitlist State
+  const [waitlistItems, setWaitlistItems] = useState([]);
+  const [claimingWaitlistId, setClaimingWaitlistId] = useState(null);
 
   // Health Profile State
   const [healthProfile, setHealthProfile] = useState({
@@ -44,18 +52,48 @@ const PatientDashboard = () => {
   const [comment, setComment] = useState('');
   const [submittingReview, setSubmittingReview] = useState(false);
 
+  const fetchTokenForAppointment = useCallback(async (appointmentId) => {
+    try {
+      const res = await api.get(`/clinic-queue/appointment/${appointmentId}`);
+      if (res.data) {
+        setTokens(prev => ({ ...prev, [appointmentId]: res.data }));
+      }
+    } catch (err) {
+      // Token not yet created or not checked in
+    }
+  }, []);
+
+  const fetchWaitlist = useCallback(async () => {
+    try {
+      const res = await api.get('/waitlist/my');
+      setWaitlistItems(res.data || []);
+    } catch (err) {
+      console.warn('Could not load waitlist:', err.message);
+    }
+  }, []);
+
   const fetchAppointments = useCallback(async () => {
     setLoading(true);
     try {
       const res = await api.get('/appointments/my');
-      setAppointments(res.data);
+      const apts = res.data || [];
+      setAppointments(apts);
+
+      // Fetch clinic tokens for today's in-person appointments
+      const todayStr = new Date().toISOString().substring(0, 10);
+      apts.forEach(a => {
+        const aptDateStr = new Date(a.date).toISOString().substring(0, 10);
+        if (a.appointment_type === 'in_person' && (aptDateStr === todayStr || a.status === 'accepted')) {
+          fetchTokenForAppointment(a.id);
+        }
+      });
     } catch (err) {
       console.error(err);
       toast.error('Failed to load appointments');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [fetchTokenForAppointment]);
 
   const fetchHealthProfile = useCallback(async () => {
     try {
@@ -81,16 +119,80 @@ const PatientDashboard = () => {
   useEffect(() => {
     fetchAppointments();
     fetchHealthProfile();
+    fetchWaitlist();
 
     const handleNotification = () => {
       fetchAppointments();
+      fetchWaitlist();
     };
 
     window.addEventListener('new-notification', handleNotification);
     return () => {
       window.removeEventListener('new-notification', handleNotification);
     };
-  }, [fetchAppointments, fetchHealthProfile]);
+  }, [fetchAppointments, fetchHealthProfile, fetchWaitlist]);
+
+  // Live countdown timer for waitlist offers
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setWaitlistItems(prev => prev.map(item => {
+        if (item.status === 'offered' && item.remaining_seconds > 0) {
+          return { ...item, remaining_seconds: item.remaining_seconds - 1 };
+        }
+        return item;
+      }));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const formatCountdown = (secs) => {
+    if (!secs || secs <= 0) return '00:00';
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  };
+
+  const handleCheckIn = async (aptId) => {
+    setCheckingInId(aptId);
+    try {
+      const res = await api.post('/clinic-queue/check-in', { appointment_id: aptId });
+      toast.success(res.data.message || 'Check-in successful! Your digital token is active.');
+      await fetchTokenForAppointment(aptId);
+    } catch (err) {
+      console.error(err);
+      toast.error(err.response?.data?.message || 'Check-in failed');
+    } finally {
+      setCheckingInId(null);
+    }
+  };
+
+  const handleClaimWaitlist = async (waitlistId) => {
+    setClaimingWaitlistId(waitlistId);
+    try {
+      const res = await api.post(`/waitlist/${waitlistId}/claim`, { appointment_type: 'in_person' });
+      toast.success(res.data.message || 'Waitlist slot claimed and confirmed!');
+      fetchWaitlist();
+      fetchAppointments();
+    } catch (err) {
+      console.error(err);
+      toast.error(err.response?.data?.message || 'Failed to claim waitlist slot');
+    } finally {
+      setClaimingWaitlistId(null);
+    }
+  };
+
+  const handleCancelWaitlist = async (waitlistId) => {
+    if (window.confirm('Are you sure you want to leave this doctor waitlist?')) {
+      try {
+        await api.delete(`/waitlist/${waitlistId}`);
+        toast.info('Removed from waitlist');
+        fetchWaitlist();
+      } catch (err) {
+        console.error(err);
+        toast.error('Failed to leave waitlist');
+      }
+    }
+  };
 
 
 
@@ -275,6 +377,16 @@ const PatientDashboard = () => {
               }`}
             >
               📅 Consultations ({appointments.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('waitlist')}
+              className={`px-4 py-2 rounded-lg font-bold text-xs sm:text-sm transition cursor-pointer ${
+                activeTab === 'waitlist'
+                  ? 'bg-white text-indigo-950 shadow-md font-extrabold'
+                  : 'text-indigo-200 hover:text-white'
+              }`}
+            >
+              📋 Priority Waitlist ({waitlistItems.filter(w => w.status === 'offered' || w.status === 'waiting').length})
             </button>
             <button
               onClick={() => setActiveTab('health-profile')}
@@ -483,6 +595,88 @@ const PatientDashboard = () => {
                       </button>
                     )}
                   </div>
+
+                  {/* LIVE CLINIC TOKEN & QUEUE CARD FOR IN-PERSON VISITS */}
+                  {apt.appointment_type !== 'video' && apt.status !== 'cancelled' && apt.status !== 'rejected' && (
+                    <div className="mt-3 pt-3 border-t border-slate-100 w-full">
+                      {tokens[apt.id] ? (
+                        <div className={`p-4 rounded-xl border ${
+                          tokens[apt.id].is_turn_approaching 
+                            ? 'bg-amber-50/80 border-amber-300 ring-2 ring-amber-400/30' 
+                            : 'bg-indigo-50/40 border-indigo-200'
+                        }`}>
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            <div className="flex items-center gap-3">
+                              <div className="w-12 h-12 rounded-xl bg-slate-950 text-white flex flex-col items-center justify-center shadow-md">
+                                <span className="text-[9px] uppercase font-bold text-indigo-300">Token</span>
+                                <span className="text-sm font-black font-mono tracking-tight text-white">
+                                  {tokens[apt.id].token.token_code}
+                                </span>
+                              </div>
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-black text-slate-900">
+                                    Clinic Queue Token #{tokens[apt.id].token.token_number}
+                                  </span>
+                                  <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full border ${
+                                    tokens[apt.id].token.status === 'in_consultation'
+                                      ? 'bg-emerald-100 text-emerald-800 border-emerald-300 animate-pulse'
+                                      : tokens[apt.id].token.status === 'completed'
+                                      ? 'bg-slate-100 text-slate-700 border-slate-200'
+                                      : 'bg-blue-100 text-blue-800 border-blue-200'
+                                  }`}>
+                                    {tokens[apt.id].token.status === 'in_consultation' ? 'Now In Room' : tokens[apt.id].token.status}
+                                  </span>
+                                </div>
+                                <p className="text-xs text-slate-600 font-medium mt-0.5 flex flex-wrap items-center gap-2">
+                                  <span>Currently Serving: <strong className="text-indigo-700 font-black">{tokens[apt.id].currently_serving?.token_code || 'None yet'}</strong></span>
+                                  <span className="text-slate-300">|</span>
+                                  <span>Ahead of you: <strong className="text-slate-800 font-black">{tokens[apt.id].patients_ahead} patient{tokens[apt.id].patients_ahead === 1 ? '' : 's'}</strong></span>
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="text-left sm:text-right">
+                              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">
+                                Estimated Wait
+                              </span>
+                              <span className="text-sm font-black text-indigo-600">
+                                {tokens[apt.id].token.status === 'completed' 
+                                  ? 'Visit Completed' 
+                                  : (tokens[apt.id].token.status === 'in_consultation' 
+                                      ? 'Your Turn Now!' 
+                                      : `~${tokens[apt.id].estimated_wait_minutes} mins`)}
+                              </span>
+                              <span className="text-[9px] text-slate-400 block">
+                                Based on Dr.'s pace ({tokens[apt.id].actual_average_pace_minutes}m/pt)
+                              </span>
+                            </div>
+                          </div>
+
+                          {tokens[apt.id].is_turn_approaching && tokens[apt.id].token.status === 'waiting' && (
+                            <div className="mt-3 p-2.5 bg-amber-500/15 border border-amber-400/50 rounded-lg flex items-center gap-2 text-xs font-black text-amber-900 animate-pulse">
+                              <span className="text-base">🔔</span>
+                              <span>Your turn is approaching! Please proceed towards Dr. {apt.doctor_name}'s consultation room.</span>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
+                          <div className="flex items-center gap-2 text-xs text-slate-600 font-medium">
+                            <span className="text-lg">🎫</span>
+                            <span>Arrived at clinic? Check in to generate your digital token and track live queue progress.</span>
+                          </div>
+                          <button
+                            onClick={() => handleCheckIn(apt.id)}
+                            disabled={checkingInId === apt.id}
+                            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-lg shadow-sm transition cursor-pointer active:scale-95 disabled:opacity-50 whitespace-nowrap"
+                          >
+                            {checkingInId === apt.id ? 'Checking In...' : 'Check In & Get Token 🎫'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -490,7 +684,133 @@ const PatientDashboard = () => {
         </div>
       )}
 
-      {/* TAB 2: PATIENT HEALTH PROFILE */}
+      {/* TAB 2: SMART PRIORITY WAITLIST */}
+      {activeTab === 'waitlist' && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 shadow-sm">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-6 mb-6 border-b border-slate-100 gap-4">
+            <div>
+              <h2 className="text-xl font-black text-slate-900 tracking-tight flex items-center gap-2">
+                <span>📋</span> DocBook Priority Appointment Waitlist
+              </h2>
+              <p className="text-xs text-slate-500 font-medium mt-0.5">
+                Automatically monitors practitioner cancellations and reserves freed slots with a 15-minute claim window.
+              </p>
+            </div>
+            <a
+              href="/doctors"
+              className="text-xs font-bold text-indigo-600 hover:text-indigo-800 self-start sm:self-center"
+            >
+              + Join another doctor's waitlist
+            </a>
+          </div>
+
+          {waitlistItems.length === 0 ? (
+            <div className="text-center py-16 px-4 bg-slate-50/50 rounded-2xl border-2 border-dashed border-slate-200">
+              <span className="text-4xl">📋</span>
+              <h3 className="text-base font-black text-slate-900 mt-3">You are not currently waiting for any doctors</h3>
+              <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto font-medium">
+                When a doctor's schedule is full, join their waitlist to get first priority access the instant an appointment is freed!
+              </p>
+              <a
+                href="/doctors"
+                className="inline-block mt-4 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition"
+              >
+                Find Specialists
+              </a>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {waitlistItems.map((item) => {
+                const isOffered = item.status === 'offered';
+                const isWaiting = item.status === 'waiting';
+
+                return (
+                  <div
+                    key={item.id}
+                    className={`rounded-2xl border p-6 transition duration-200 ${
+                      isOffered
+                        ? 'bg-gradient-to-r from-emerald-50 via-teal-50 to-indigo-50 border-emerald-300 shadow-md ring-2 ring-emerald-500/20'
+                        : 'bg-white border-slate-200 hover:border-indigo-200'
+                    }`}
+                  >
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                      <div className="space-y-1.5">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className={`text-[10px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full border ${
+                            isOffered
+                              ? 'bg-emerald-500 text-white border-emerald-600 shadow-sm animate-pulse'
+                              : isWaiting
+                              ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                              : item.status === 'claimed'
+                              ? 'bg-slate-100 text-slate-700 border-slate-300'
+                              : 'bg-rose-50 text-rose-700 border-rose-200'
+                          }`}>
+                            {isOffered ? '🎉 Slot Offered - Claim Now!' : item.status.toUpperCase()}
+                          </span>
+
+                          {isOffered && item.remaining_seconds > 0 && (
+                            <span className="text-xs font-mono font-black text-rose-600 bg-rose-50 border border-rose-200 px-2.5 py-0.5 rounded-md flex items-center gap-1">
+                              <span>⌛</span> Expires in {formatCountdown(item.remaining_seconds)}
+                            </span>
+                          )}
+                        </div>
+
+                        <h3 className="text-lg font-black text-slate-900">
+                          Dr. {item.doctor_name}
+                        </h3>
+                        <p className="text-xs font-bold uppercase tracking-wider text-indigo-600">
+                          {item.doctor_specialty} • Fee: ₹{item.doctor_fees}
+                        </p>
+
+                        {isOffered && item.offered_slot_date && (
+                          <div className="mt-2 p-3 bg-white/80 rounded-xl border border-emerald-200 text-xs font-bold text-slate-800 space-y-1">
+                            <p className="text-emerald-800 font-extrabold flex items-center gap-1.5">
+                              <span>🗓️</span> A freed appointment timeslot is ready for you:
+                            </p>
+                            <p className="text-slate-600 pl-5">
+                              Date: <strong>{new Date(item.offered_slot_date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</strong> | 
+                              Time: <strong className="text-indigo-600">{item.offered_slot_start_time?.substring(0, 5)} - {item.offered_slot_end_time?.substring(0, 5)}</strong>
+                            </p>
+                          </div>
+                        )}
+
+                        {isWaiting && (
+                          <p className="text-xs text-slate-500 font-medium">
+                            Preferred Date: <strong>{item.preferred_date ? new Date(item.preferred_date).toLocaleDateString() : 'Any upcoming date'}</strong> • Preferred Mode: <strong>{item.preferred_type}</strong>
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 self-start md:self-center">
+                        {isOffered && (
+                          <button
+                            onClick={() => handleClaimWaitlist(item.id)}
+                            disabled={claimingWaitlistId === item.id}
+                            className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black rounded-xl shadow-md transition cursor-pointer active:scale-95 disabled:opacity-50"
+                          >
+                            {claimingWaitlistId === item.id ? 'Claiming Slot...' : 'Claim This Slot Now →'}
+                          </button>
+                        )}
+
+                        {(isWaiting || isOffered) && (
+                          <button
+                            onClick={() => handleCancelWaitlist(item.id)}
+                            className="px-4 py-2 border border-slate-200 text-slate-600 hover:text-rose-600 hover:bg-rose-50 text-xs font-bold rounded-xl transition cursor-pointer"
+                          >
+                            {isOffered ? 'Decline Offer' : 'Leave Waitlist'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB 3: PATIENT HEALTH PROFILE */}
       {activeTab === 'health-profile' && (
         <div className="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 shadow-sm">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-6 mb-6 border-b border-slate-100 gap-4">

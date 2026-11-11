@@ -9,7 +9,8 @@ const {
   deleteSlot,
   addSlots, 
   getEarningsDashboard,
-  getDashboardStats
+  getDashboardStats,
+  getSmartMatchDoctors
 } = require('../controllers/doctorController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 
@@ -24,6 +25,7 @@ router.get('/earnings', protect, authorize('doctor'), getEarningsDashboard);
 
 // Public routes
 router.get('/', getDoctors);
+router.post('/smart-match', getSmartMatchDoctors);
 router.get('/:id/slots', getDoctorSlots);
 
 module.exports = router;
