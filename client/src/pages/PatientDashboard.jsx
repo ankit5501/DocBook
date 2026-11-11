@@ -1,6 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../api/axios';
 import { toast } from 'react-toastify';
+import { downloadPrescriptionAsPDF } from '../utils/prescriptionPdf';
+import ConsultationChatModal from '../components/ConsultationChatModal';
 
 const PatientDashboard = () => {
   const [activeTab, setActiveTab] = useState('appointments'); // 'appointments' or 'health-profile'
@@ -29,6 +32,11 @@ const PatientDashboard = () => {
 
   // Prescription Modal State
   const [selectedPrescription, setSelectedPrescription] = useState(null);
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+  const prescriptionRef = useRef(null);
+
+  // Consultation Chat Modal State
+  const [activeChatApt, setActiveChatApt] = useState(null);
 
   // Review Modal State
   const [reviewApt, setReviewApt] = useState(null);
@@ -192,6 +200,23 @@ const PatientDashboard = () => {
     }
   };
 
+  // Download Prescription as High Quality PDF
+  const handleDownloadPdf = async () => {
+    if (!prescriptionRef.current || !selectedPrescription) return;
+    setIsDownloadingPdf(true);
+    try {
+      const patientSlug = (selectedPrescription.patient_name || 'Patient').replace(/\s+/g, '_');
+      const filename = `Prescription_APT-${selectedPrescription.appointment_id || selectedPrescription.id}_${patientSlug}.pdf`;
+      await downloadPrescriptionAsPDF(prescriptionRef.current, filename);
+      toast.success('Prescription PDF successfully generated and downloaded!');
+    } catch (err) {
+      console.error('Prescription PDF export error:', err);
+      toast.error('Failed to export PDF file. You can also print the prescription.');
+    } finally {
+      setIsDownloadingPdf(false);
+    }
+  };
+
 
   // Open Review Modal
   const openReviewModal = (apt) => {
@@ -344,6 +369,18 @@ const PatientDashboard = () => {
 
                     {/* Status Badges */}
                     <div className="flex flex-wrap gap-2 pt-1">
+                      {/* Consultation Mode Badge */}
+                      {apt.appointment_type === 'video' ? (
+                        <span className="px-2.5 py-0.5 inline-flex items-center gap-1.5 text-[10px] font-black rounded-md border bg-purple-50 text-purple-700 border-purple-200">
+                          <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse"></span>
+                          📹 Online Video Call
+                        </span>
+                      ) : (
+                        <span className="px-2.5 py-0.5 inline-flex items-center gap-1.5 text-[10px] font-bold rounded-md border bg-slate-100 text-slate-700 border-slate-200">
+                          🏥 In-Person Clinic
+                        </span>
+                      )}
+
                       <span
                         className={`px-2.5 py-0.5 inline-flex text-[10px] font-black rounded-md border uppercase tracking-wider ${
                           apt.status === 'accepted'
@@ -386,6 +423,26 @@ const PatientDashboard = () => {
 
                   {/* Action Buttons */}
                   <div className="flex flex-wrap items-center gap-2 self-stretch lg:self-center">
+                    {/* Join Video Call Button for Online Appointments */}
+                    {apt.appointment_type === 'video' && (apt.status === 'accepted' || apt.status === 'completed') && (
+                      <Link
+                        to={`/consultation/video/${apt.id}`}
+                        className="px-3.5 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white text-xs font-black rounded-lg shadow-sm hover:shadow transition cursor-pointer flex items-center gap-1.5 active:scale-95"
+                      >
+                        <span>📹</span> Join Video Call
+                      </Link>
+                    )}
+
+                    {/* Consultation Real-Time Chat (Pre-visit questions & 48h Follow-up) */}
+                    {(apt.status === 'accepted' || apt.status === 'completed') && (
+                      <button
+                        onClick={() => setActiveChatApt(apt)}
+                        className="px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 text-xs font-bold rounded-lg shadow-sm transition cursor-pointer flex items-center gap-1.5 active:scale-95"
+                      >
+                        <span>💬</span> Consultation Chat
+                      </button>
+                    )}
+
                     {/* View Prescription Button */}
                     {apt.prescription_id && (
                       <button
@@ -723,14 +780,21 @@ const PatientDashboard = () => {
               </span>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => window.print()}
-                  className="px-3.5 py-1.5 bg-slate-900 text-white hover:bg-slate-800 text-xs font-bold rounded-lg shadow transition flex items-center gap-1.5 cursor-pointer"
+                  onClick={handleDownloadPdf}
+                  disabled={isDownloadingPdf}
+                  className="px-3.5 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-bold rounded-lg shadow transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50 active:scale-95"
                 >
-                  <span>🖨️</span> Print / Save PDF
+                  <span>⬇️</span> {isDownloadingPdf ? 'Generating PDF...' : 'Download PDF'}
+                </button>
+                <button
+                  onClick={() => window.print()}
+                  className="px-3.5 py-1.5 bg-slate-900 text-white hover:bg-slate-800 text-xs font-bold rounded-lg shadow transition flex items-center gap-1.5 cursor-pointer active:scale-95"
+                >
+                  <span>🖨️</span> Print Slip
                 </button>
                 <button
                   onClick={() => setSelectedPrescription(null)}
-                  className="text-slate-400 hover:text-slate-600 text-xl font-bold p-1"
+                  className="text-slate-400 hover:text-slate-600 text-xl font-bold p-1 cursor-pointer"
                 >
                   ✕
                 </button>
@@ -738,7 +802,7 @@ const PatientDashboard = () => {
             </div>
 
             {/* Printable Prescription Document */}
-            <div className="pt-6 font-sans">
+            <div ref={prescriptionRef} className="pt-6 font-sans bg-white p-4 rounded-xl">
               {/* Clinic Letterhead */}
               <div className="border-b-2 border-indigo-600 pb-5 mb-5 flex justify-between items-start">
                 <div>
@@ -931,6 +995,14 @@ const PatientDashboard = () => {
             </form>
           </div>
         </div>
+      )}
+
+      {/* MODAL 4: REAL-TIME CONSULTATION CHAT */}
+      {activeChatApt && (
+        <ConsultationChatModal
+          appointmentId={activeChatApt.id}
+          onClose={() => setActiveChatApt(null)}
+        />
       )}
     </div>
   );

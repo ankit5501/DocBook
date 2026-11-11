@@ -13,6 +13,7 @@ const BookAppointment = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [doctorInfo, setDoctorInfo] = useState(null);
+  const [appointmentType, setAppointmentType] = useState('in_person'); // 'in_person' or 'video'
 
   useEffect(() => {
     const fetchDoctorAndSlots = async () => {
@@ -50,13 +51,15 @@ const BookAppointment = () => {
     setError('');
 
     try {
-      // 1. Create booking/appointment request
+      // 1. Create booking/appointment request with consultation mode
       const bookRes = await api.post('/appointments', {
         doctor_id: parseInt(id),
-        slot_id: selectedSlot.id
+        slot_id: selectedSlot.id,
+        appointment_type: appointmentType
       });
 
       const appointmentId = bookRes.data.id;
+
 
       // 2. Offline Payment Flow (Pay at Clinic)
       await api.post('/payments/offline', { appointment_id: appointmentId });
@@ -111,9 +114,56 @@ const BookAppointment = () => {
 
             {error && <div className="text-red-600 bg-red-50 p-4 rounded-lg text-sm border border-red-200 font-bold">{error}</div>}
 
-            {/* Slots section */}
+            {/* Step 1: Consultation Mode Selection */}
             <div>
-              <h3 className="text-sm font-black text-gray-400 uppercase tracking-widest mb-4">1. Choose Date & Time Slot</h3>
+              <h3 className="text-sm font-black text-gray-400 uppercase tracking-widest mb-3">
+                1. Select Consultation Mode
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div
+                  onClick={() => setAppointmentType('in_person')}
+                  className={`p-4 rounded-xl border cursor-pointer transition select-none flex items-start space-x-3.5 ${
+                    appointmentType === 'in_person'
+                      ? 'border-indigo-600 bg-indigo-50/50 ring-2 ring-indigo-500/20 shadow-sm'
+                      : 'border-gray-200 hover:border-gray-300 bg-white'
+                  }`}
+                >
+                  <div className="text-2xl mt-0.5">🏥</div>
+                  <div>
+                    <h4 className="font-extrabold text-gray-900 text-sm">In-Person Clinic Visit</h4>
+                    <p className="text-xs text-gray-500 mt-1 font-medium leading-relaxed">
+                      Physical check-up and consultation at the doctor's verified clinic.
+                    </p>
+                  </div>
+                </div>
+
+                <div
+                  onClick={() => setAppointmentType('video')}
+                  className={`p-4 rounded-xl border cursor-pointer transition select-none flex items-start space-x-3.5 ${
+                    appointmentType === 'video'
+                      ? 'border-indigo-600 bg-indigo-50/50 ring-2 ring-indigo-500/20 shadow-sm'
+                      : 'border-gray-200 hover:border-gray-300 bg-white'
+                  }`}
+                >
+                  <div className="text-2xl mt-0.5">📹</div>
+                  <div>
+                    <div className="flex items-center space-x-2">
+                      <h4 className="font-extrabold text-gray-900 text-sm">Online Video Call</h4>
+                      <span className="text-[10px] font-black uppercase tracking-wider bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
+                        Telehealth
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1 font-medium leading-relaxed">
+                      Private 1-on-1 HD telehealth video call room & consultation chat.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Step 2: Slots section */}
+            <div>
+              <h3 className="text-sm font-black text-gray-400 uppercase tracking-widest mb-3">2. Choose Date & Time Slot</h3>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3.5">
                 {slots.length === 0 ? (
                   <p className="col-span-full text-gray-500 text-xs bg-gray-50 py-8 text-center rounded-lg border border-dashed border-gray-300 font-bold">
@@ -142,16 +192,16 @@ const BookAppointment = () => {
               </div>
             </div>
 
-            {/* Payment Method description */}
+            {/* Step 3: Payment Policy */}
             <div>
-              <h3 className="text-sm font-black text-gray-400 uppercase tracking-widest mb-4">2. Payment Policy</h3>
+              <h3 className="text-sm font-black text-gray-400 uppercase tracking-widest mb-3">3. Payment & Attendance Policy</h3>
               <div className="bg-slate-50 p-6 rounded-lg border border-gray-200">
                 <div className="flex items-start space-x-3.5">
                   <div className="text-xl mt-0.5">ℹ️</div>
                   <div>
-                    <span className="font-black text-slate-800 text-sm block">Pay Offline (At Clinic Counter)</span>
+                    <span className="font-black text-slate-800 text-sm block">Pay at Clinic Counter</span>
                     <p className="text-xs text-gray-500 mt-1.5 leading-relaxed font-semibold">
-                      Your booking is secured without online prepayment. Confirm your slot now and clear the consultation fee of <strong>₹{doctorInfo?.fees || 0}</strong> at the reception counter via Cash, UPI, or Card prior to your appointment.
+                      Your booking is secured without upfront charges. Clear the fee of <strong>₹{doctorInfo?.fees || 0}</strong> at the reception counter or via online consultation settlement prior to your session.
                     </p>
                   </div>
                 </div>
@@ -171,13 +221,20 @@ const BookAppointment = () => {
                   <span className="font-extrabold text-gray-800">₹{doctorInfo?.fees || 0}</span>
                 </div>
                 <div className="flex justify-between">
+                  <span>Consultation Mode:</span>
+                  <span className="font-extrabold text-indigo-600">
+                    {appointmentType === 'video' ? '📹 Online Video Call' : '🏥 In-Person Clinic'}
+                  </span>
+                </div>
+                <div className="flex justify-between">
                   <span>Payment Mode:</span>
-                  <span className="font-extrabold text-gray-800">Offline (At Clinic)</span>
+                  <span className="font-extrabold text-gray-800">Pay at Clinic Counter</span>
                 </div>
                 <div className="flex justify-between pt-3.5 border-t border-dashed border-gray-300 font-black text-gray-900 text-sm">
                   <span>Total Due:</span>
                   <span className="text-indigo-600 text-base">₹{doctorInfo?.fees || 0}</span>
                 </div>
+
               </div>
 
               <div className="mt-6">

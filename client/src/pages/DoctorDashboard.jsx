@@ -1,7 +1,9 @@
 import { useState, useEffect, useContext } from 'react';
+import { Link } from 'react-router-dom';
 import { AuthContext } from '../context/AuthContext';
 import api from '../api/axios';
 import { toast } from 'react-toastify';
+import ConsultationChatModal from '../components/ConsultationChatModal';
 import {
   ResponsiveContainer,
   BarChart,
@@ -37,6 +39,9 @@ const DoctorDashboard = () => {
 
   const [patientSummaryModal, setPatientSummaryModal] = useState(null);
   const [loadingPatientSummary, setLoadingPatientSummary] = useState(false);
+
+  // Real-Time Consultation Chat State
+  const [activeChatApt, setActiveChatApt] = useState(null);
 
 
   // Aggregation State directly from PostgreSQL DB
@@ -506,7 +511,19 @@ const DoctorDashboard = () => {
                                   <span className="text-xs text-gray-500 font-semibold block">{dateFormatted}</span>
                                 </td>
                                 <td className="py-4 whitespace-nowrap">
-                                  <div className="font-bold text-gray-900">{item.patient_name}</div>
+                                  <div className="font-bold text-gray-900 flex items-center gap-1.5">
+                                    <span>{item.patient_name}</span>
+                                    {item.appointment_type === 'video' ? (
+                                      <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase text-purple-700 bg-purple-50 border border-purple-200 px-1.5 py-0.5 rounded">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse"></span>
+                                        📹 Video
+                                      </span>
+                                    ) : (
+                                      <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded">
+                                        🏥 In-Person
+                                      </span>
+                                    )}
+                                  </div>
                                   <button
                                     onClick={() => openPatientHealthSummary(item.patient_id, item.patient_name)}
                                     className="text-[10px] text-indigo-600 hover:text-indigo-800 font-extrabold flex items-center gap-1 mt-0.5 cursor-pointer"
@@ -517,7 +534,29 @@ const DoctorDashboard = () => {
                                 <td className="py-4 text-xs text-gray-500 font-medium whitespace-nowrap">{item.patient_email}</td>
                                 <td className="py-4 text-center whitespace-nowrap">{renderStatusBadge(item.status)}</td>
                                 <td className="py-4 text-right whitespace-nowrap">
-                                  <div className="flex items-center justify-end gap-2">
+                                  <div className="flex items-center justify-end gap-1.5">
+                                    {/* Video Consultation Room Button */}
+                                    {item.appointment_type === 'video' && (item.status === 'accepted' || item.status === 'completed') && (
+                                      <Link
+                                        to={`/consultation/video/${item.id}`}
+                                        className="text-xs font-black bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white px-2.5 py-1.5 rounded-lg shadow-sm transition active:scale-95 cursor-pointer flex items-center gap-1"
+                                        title="Join Telehealth Video Call"
+                                      >
+                                        <span>📹</span> Call
+                                      </Link>
+                                    )}
+
+                                    {/* Real-Time Consultation Chat */}
+                                    {(item.status === 'accepted' || item.status === 'completed') && (
+                                      <button
+                                        onClick={() => setActiveChatApt(item)}
+                                        className="text-xs font-bold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 px-2.5 py-1.5 rounded-lg shadow-sm transition active:scale-95 cursor-pointer flex items-center gap-1"
+                                        title="Consultation Chat"
+                                      >
+                                        <span>💬</span> Chat
+                                      </button>
+                                    )}
+
                                     {item.status === 'pending' && (
                                       <>
                                         <button
@@ -840,7 +879,19 @@ const DoctorDashboard = () => {
                       filteredAppointments.map((apt) => (
                         <tr key={apt.id} className="hover:bg-gray-50/50 transition duration-150">
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="font-bold text-gray-900">{apt.patient_name}</div>
+                            <div className="font-bold text-gray-900 flex items-center gap-1.5">
+                              <span>{apt.patient_name}</span>
+                              {apt.appointment_type === 'video' ? (
+                                <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase text-purple-700 bg-purple-50 border border-purple-200 px-1.5 py-0.5 rounded">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse"></span>
+                                  📹 Video
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded">
+                                  🏥 In-Person
+                                </span>
+                              )}
+                            </div>
                             <div className="text-xs text-gray-500 font-medium">{apt.patient_email}</div>
                             <div className="flex flex-wrap gap-1 mt-1">
                               {apt.patient_allergies && (
@@ -878,7 +929,27 @@ const DoctorDashboard = () => {
                               {apt.payment_status === 'completed' ? 'Paid' : 'Pending'}
                             </span>
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-right space-x-2">
+                          <td className="px-6 py-4 whitespace-nowrap text-right space-x-1.5">
+                            {/* Video Room Button */}
+                            {apt.appointment_type === 'video' && (apt.status === 'accepted' || apt.status === 'completed') && (
+                              <Link
+                                to={`/consultation/video/${apt.id}`}
+                                className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white text-xs font-black px-3 py-2 rounded-lg shadow-sm transition active:scale-95 cursor-pointer inline-flex items-center gap-1"
+                              >
+                                <span>📹</span> Video Call
+                              </Link>
+                            )}
+
+                            {/* Consultation Chat Button */}
+                            {(apt.status === 'accepted' || apt.status === 'completed') && (
+                              <button
+                                onClick={() => setActiveChatApt(apt)}
+                                className="bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 text-xs font-bold px-3 py-2 rounded-lg shadow-sm transition active:scale-95 cursor-pointer inline-flex items-center gap-1"
+                              >
+                                <span>💬</span> Chat
+                              </button>
+                            )}
+
                             {apt.status === 'pending' && (
                               <>
                                 <button
@@ -1331,6 +1402,14 @@ const DoctorDashboard = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Real-Time Consultation Chat Modal */}
+      {activeChatApt && (
+        <ConsultationChatModal
+          appointmentId={activeChatApt.id}
+          onClose={() => setActiveChatApt(null)}
+        />
       )}
     </div>
   );

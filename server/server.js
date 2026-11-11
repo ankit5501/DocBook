@@ -40,7 +40,78 @@ io.on('connection', (socket) => {
     connectedUsers.set(userId.toString(), socket.id);
   });
 
+  // --- CONSULTATION CHAT SOCKET EVENTS ---
+  socket.on('join_consultation_chat', ({ appointmentId }) => {
+    const roomName = `chat_${appointmentId}`;
+    socket.join(roomName);
+    console.log(`Socket ${socket.id} joined consultation chat room ${roomName}`);
+  });
+
+  socket.on('leave_consultation_chat', ({ appointmentId }) => {
+    const roomName = `chat_${appointmentId}`;
+    socket.leave(roomName);
+  });
+
+  // --- 1-ON-1 WEBRTC VIDEO CONSULTATION ROOM EVENTS ---
+  socket.on('join_video_room', ({ roomId, userId, userName, userRole }) => {
+    const videoRoom = `video_${roomId}`;
+    socket.join(videoRoom);
+    socket.data.videoRoom = videoRoom;
+    socket.data.userId = userId;
+    socket.data.userName = userName;
+
+    console.log(`User ${userName} (${userRole}) joined video room: ${videoRoom}`);
+
+    // Notify other participant in the room that a peer has joined
+    socket.to(videoRoom).emit('user_joined_video', {
+      socketId: socket.id,
+      userId,
+      userName,
+      userRole
+    });
+  });
+
+  socket.on('video_offer', ({ roomId, offer }) => {
+    const videoRoom = `video_${roomId}`;
+    socket.to(videoRoom).emit('video_offer', {
+      offer,
+      senderSocketId: socket.id
+    });
+  });
+
+  socket.on('video_answer', ({ roomId, answer }) => {
+    const videoRoom = `video_${roomId}`;
+    socket.to(videoRoom).emit('video_answer', {
+      answer,
+      senderSocketId: socket.id
+    });
+  });
+
+  socket.on('ice_candidate', ({ roomId, candidate }) => {
+    const videoRoom = `video_${roomId}`;
+    socket.to(videoRoom).emit('ice_candidate', {
+      candidate,
+      senderSocketId: socket.id
+    });
+  });
+
+  socket.on('leave_video_room', ({ roomId }) => {
+    const videoRoom = `video_${roomId}`;
+    socket.leave(videoRoom);
+    socket.to(videoRoom).emit('user_left_video', {
+      socketId: socket.id,
+      userName: socket.data.userName
+    });
+  });
+
   socket.on('disconnect', () => {
+    if (socket.data.videoRoom) {
+      socket.to(socket.data.videoRoom).emit('user_left_video', {
+        socketId: socket.id,
+        userName: socket.data.userName
+      });
+    }
+
     for (const [key, value] of connectedUsers.entries()) {
       if (value === socket.id) {
         connectedUsers.delete(key);
@@ -71,6 +142,8 @@ app.use('/api/payments', require('./routes/payments'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/patient', require('./routes/patient'));
 app.use('/api/reviews', require('./routes/reviews'));
+app.use('/api/chat', require('./routes/chat'));
+
 
 
 const PORT = process.env.PORT || 5000;

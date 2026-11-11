@@ -5,7 +5,7 @@ const { pool } = require('../config/db');
 // @access Private (Patient)
 exports.bookAppointment = async (req, res) => {
   try {
-    const { doctor_id, slot_id } = req.body;
+    const { doctor_id, slot_id, appointment_type } = req.body;
     const patient_id = req.user.id;
 
     // Check if slot is available
@@ -14,15 +14,21 @@ exports.bookAppointment = async (req, res) => {
       return res.status(400).json({ message: 'Slot is not available' });
     }
 
+    const type = appointment_type === 'video' ? 'video' : 'in_person';
+    const meeting_room_id = type === 'video' 
+      ? `docbook-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`
+      : null;
+
     // Begin transaction
     await pool.query('BEGIN');
 
     // Create appointment
     const aptRes = await pool.query(
-      'INSERT INTO appointments (patient_id, doctor_id, slot_id) VALUES ($1, $2, $3) RETURNING *',
-      [patient_id, doctor_id, slot_id]
+      'INSERT INTO appointments (patient_id, doctor_id, slot_id, appointment_type, meeting_room_id) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [patient_id, doctor_id, slot_id, type, meeting_room_id]
     );
     const appointment = aptRes.rows[0];
+
 
     // Mark slot as booked
     await pool.query('UPDATE slots SET is_booked = true WHERE id = $1', [slot_id]);

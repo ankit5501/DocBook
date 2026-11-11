@@ -38,8 +38,11 @@ CREATE TABLE IF NOT EXISTS appointments (
     slot_id INTEGER REFERENCES slots(id),
     status VARCHAR(20) DEFAULT 'pending', -- pending, accepted, rejected, completed, cancelled
     payment_status VARCHAR(20) DEFAULT 'pending', -- pending, completed, failed
+    appointment_type VARCHAR(20) DEFAULT 'in_person', -- in_person, video
+    meeting_room_id VARCHAR(100),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
 
 CREATE TABLE IF NOT EXISTS payments (
     id SERIAL PRIMARY KEY,
@@ -89,10 +92,22 @@ CREATE TABLE IF NOT EXISTS prescriptions (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS consultation_messages (
+    id SERIAL PRIMARY KEY,
+    appointment_id INTEGER REFERENCES appointments(id) ON DELETE CASCADE,
+    sender_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    sender_role VARCHAR(20) NOT NULL, -- patient, doctor
+    message TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Migration Queries for existing databases
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT FALSE;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20) DEFAULT 'online';
 ALTER TABLE reviews ADD COLUMN IF NOT EXISTS appointment_id INTEGER REFERENCES appointments(id) ON DELETE CASCADE;
+ALTER TABLE appointments ADD COLUMN IF NOT EXISTS appointment_type VARCHAR(20) DEFAULT 'in_person';
+ALTER TABLE appointments ADD COLUMN IF NOT EXISTS meeting_room_id VARCHAR(100);
+
 
 
 -- Clean up duplicate doctor profiles safely by updating slots, appointments, and reviews, then deleting duplicates

@@ -141,10 +141,12 @@ exports.getAllAppointments = async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT a.id, a.status, a.payment_status, a.created_at,
+             a.appointment_type, a.meeting_room_id,
              p.name as patient_name, p.email as patient_email,
              d_u.name as doctor_name, d.specialty,
              s.date, s.start_time, s.end_time,
              pay.payment_method
+
       FROM appointments a
       JOIN users p ON a.patient_id = p.id
       JOIN doctors d ON a.doctor_id = d.id

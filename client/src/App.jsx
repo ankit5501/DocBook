@@ -10,6 +10,7 @@ import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import DoctorList from './pages/DoctorList';
 import BookAppointment from './pages/BookAppointment';
+import VideoConsultation from './pages/VideoConsultation';
 
 const SocketManager = () => {
   const { user } = useContext(AuthContext);
@@ -60,6 +61,7 @@ function App() {
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/doctors" element={<DoctorList />} />
               <Route path="/book/:id" element={<BookAppointment />} />
+              <Route path="/consultation/video/:appointmentId" element={<VideoConsultation />} />
             </Routes>
           </main>
         </div>

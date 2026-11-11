@@ -374,16 +374,21 @@ exports.getDashboardStats = async (req, res) => {
     const todaysScheduleRes = await pool.query(`
       SELECT 
         a.id,
+        a.patient_id,
         a.status,
         a.payment_status,
+        a.appointment_type,
+        a.meeting_room_id,
         s.date,
         s.start_time,
         s.end_time,
         u.name AS patient_name,
-        u.email AS patient_email
+        u.email AS patient_email,
+        pr.id AS prescription_id
       FROM appointments a
       JOIN slots s ON a.slot_id = s.id
       JOIN users u ON a.patient_id = u.id
+      LEFT JOIN prescriptions pr ON pr.appointment_id = a.id
       WHERE a.doctor_id = $1 AND s.date = CURRENT_DATE
       ORDER BY s.start_time ASC
     `, [doctor_id]);
@@ -392,16 +397,21 @@ exports.getDashboardStats = async (req, res) => {
     const allScheduleRes = await pool.query(`
       SELECT 
         a.id,
+        a.patient_id,
         a.status,
         a.payment_status,
+        a.appointment_type,
+        a.meeting_room_id,
         s.date,
         s.start_time,
         s.end_time,
         u.name AS patient_name,
-        u.email AS patient_email
+        u.email AS patient_email,
+        pr.id AS prescription_id
       FROM appointments a
       JOIN slots s ON a.slot_id = s.id
       JOIN users u ON a.patient_id = u.id
+      LEFT JOIN prescriptions pr ON pr.appointment_id = a.id
       WHERE a.doctor_id = $1
       ORDER BY s.date DESC, s.start_time ASC
     `, [doctor_id]);
