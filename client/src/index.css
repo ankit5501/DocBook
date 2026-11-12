@@ -8,6 +8,10 @@
   --color-light: #f8fafc;
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
 :root {
   color: #111827;
   background: #f8fafc;
