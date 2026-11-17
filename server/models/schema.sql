@@ -148,10 +148,44 @@ WHERE status NOT IN ('cancelled', 'rejected');
 
 -- Migration Queries for existing databases
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMP;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20) DEFAULT 'online';
 ALTER TABLE reviews ADD COLUMN IF NOT EXISTS appointment_id INTEGER REFERENCES appointments(id) ON DELETE CASCADE;
 ALTER TABLE appointments ADD COLUMN IF NOT EXISTS appointment_type VARCHAR(20) DEFAULT 'in_person';
 ALTER TABLE appointments ADD COLUMN IF NOT EXISTS meeting_room_id VARCHAR(100);
+
+-- Email Verification & Pending Registration Storage Table
+CREATE TABLE IF NOT EXISTS email_verifications (
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(255) NOT NULL,
+    otp_hash VARCHAR(255) NOT NULL,
+    name VARCHAR(100),
+    password_hash VARCHAR(255),
+    role VARCHAR(20) DEFAULT 'patient',
+    purpose VARCHAR(30) DEFAULT 'signup', -- 'signup', 'password_reset'
+    attempts INTEGER DEFAULT 0,
+    max_attempts INTEGER DEFAULT 5,
+    expires_at TIMESTAMP NOT NULL,
+    resend_available_at TIMESTAMP NOT NULL,
+    is_consumed BOOLEAN DEFAULT FALSE,
+    ip_address VARCHAR(45),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_verifications_email_purpose ON email_verifications(email, purpose);
+CREATE INDEX IF NOT EXISTS idx_email_verifications_expires_at ON email_verifications(expires_at);
+
+-- Preserve all legacy accounts: mark existing unverified users verified if they were created before verification requirement
+DO $$
+BEGIN
+    UPDATE users
+    SET is_verified = TRUE,
+        email_verified_at = COALESCE(email_verified_at, CURRENT_TIMESTAMP)
+    WHERE email_verified_at IS NULL AND (is_verified IS NULL OR is_verified = FALSE);
+END $$;
+
 
 
 

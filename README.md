@@ -589,19 +589,39 @@ Create a `.env` file inside the `server` directory.
 
 ```env
 PORT=5000
-
 DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/appointment_db
+JWT_SECRET=your_super_secret_jwt_key_min_32_characters
 
-JWT_SECRET=your_long_random_secret
-
-GOOGLE_CLIENT_ID=your_google_oauth_client_id
-
-RAZORPAY_KEY_ID=your_razorpay_key_id
-RAZORPAY_KEY_SECRET=your_razorpay_key_secret
-
+# Nodemailer / SMTP Configuration
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_SECURE=false
 EMAIL_USER=your_email@gmail.com
-EMAIL_PASS=your_gmail_app_password
+EMAIL_PASS=your_16_character_app_password
+
+# OTP Security Parameters
+OTP_EXPIRY_MINUTES=5
+OTP_RESEND_COOLDOWN_SECONDS=60
+OTP_MAX_ATTEMPTS=5
+OTP_SECRET=optional_dedicated_otp_hmac_secret_key
+
+# Optional 3rd-party integrations
+GOOGLE_CLIENT_ID=your_google_oauth_client_id
+STRIPE_SECRET_KEY=your_stripe_secret_key
+CLOUDINARY_CLOUD_NAME=your_cloud_name
+CLOUDINARY_API_KEY=your_api_key
+CLOUDINARY_API_SECRET=your_api_secret
 ```
+
+#### Gmail App Password Setup Guide
+1. Log into your Google Account.
+2. Navigate to **Manage your Google Account** -> **Security**.
+3. Under *How you sign in to Google*, ensure **2-Step Verification** is turned ON.
+4. Search or navigate to **App passwords** (or go to `myaccount.google.com/apppasswords`).
+5. Enter an app name (e.g. `DocBook Healthcare`) and click **Create**.
+6. Google will generate a 16-character code (e.g. `abcd efgh ijkl mnop`).
+7. Copy this code (without spaces) and paste it into `EMAIL_PASS` in `server/.env`.
+8. Set `EMAIL_USER` to your Gmail address.
 
 Create a `.env` file inside the `client` directory:
 
@@ -612,11 +632,9 @@ VITE_GOOGLE_CLIENT_ID=your_google_oauth_client_id
 **Important configuration notes:**
 
 - Replace all example credentials with your own values.
-- Never commit `.env` files or API secrets to GitHub.
-- Configure the Google OAuth authorized JavaScript origins for your local frontend URL.
-- Razorpay keys are optional for development; the backend has a simulated payment mode when credentials are missing.
-- Email notifications are simulated in the server console when email credentials are unavailable.
-- The current Axios API base URL and Socket.IO URL use `http://localhost:5000`. Update those for a deployed environment.
+- Real `.env` files are excluded by `.gitignore` and must never be committed.
+- Keep all secrets strictly on the server; never prefix backend secrets with `VITE_`.
+- For automated testing or offline evaluation, run `npm test` inside `server/`, which runs tests in test mode with automated verification assertion.
 
 ### 6. Start the Backend Server
 
@@ -670,9 +688,13 @@ http://localhost:5000/api
 
 | Method | Endpoint | Description |
 |---|---|---|
-| POST | `/auth/register` | Register a user |
-| POST | `/auth/login` | Login |
-| POST | `/auth/google` | Google authentication |
+| POST | `/api/auth/signup` (or `/register`) | Stage A: Validate email, check disposable/DNS MX, hash password, send 6-digit OTP |
+| POST | `/api/auth/verify-email` | Stage B: Validate 6-digit OTP, confirm mailbox access, activate account (`is_verified = TRUE`), issue JWT |
+| POST | `/api/auth/resend-otp` | Resend 6-digit verification code with 60s cooldown enforcement |
+| POST | `/api/auth/login` | Authenticate user (strictly requires `is_verified = TRUE`, rate-limited) |
+| POST | `/api/auth/forgot-password` | Request password reset OTP (generic anti-enumeration response) |
+| POST | `/api/auth/reset-password` | Verify reset OTP and atomically update account password |
+| POST | `/api/auth/google` | Google OAuth login (automatically verified) |
 
 ### Doctor APIs
 
@@ -847,18 +869,21 @@ flowchart TD
 
 ## 🔐 Security and Reliability
 
-DocBook incorporates several security and reliability mechanisms:
+DocBook incorporates advanced security and reliability mechanisms:
 
-- JWT-based authentication.
-- Password hashing using bcrypt.
-- Role-based access control.
-- Protected backend routes.
-- User account blocking checks.
-- Parameterized PostgreSQL queries.
-- Database transactions for appointment booking.
-- Row-level locking for slot reservation.
-- Database-level protection against duplicate active slot bookings.
-- Razorpay signature verification flow.
+- **Two-Stage Verified Registration:** Accounts are never activated upon simple form submission. Requires explicit proof of mailbox access through a cryptographically random 6-digit OTP.
+- **Server-Side Email Hygiene & Validation:** Trimming, lowercase normalization, RFC 5321 length limits, and syntax checking with `validator`.
+- **Disposable Email Blocking:** 120,000+ domain blocklist automatically blocks temporary and burner mailboxes (e.g. Mailinator, 10MinuteMail, GuerrillaMail, TempMail).
+- **DNS MX Mail Server Routing Check:** Verifies that candidate email domains exist and possess active mail exchange (MX) or host records before issuing challenges.
+- **Cryptographic OTP Security:** Generated using Node.js `crypto.randomInt()`. Stored solely as SHA-256 hashes with secret salt. Compared via `crypto.timingSafeEqual()` in constant time to prevent side-channel timing attacks.
+- **Challenge Lifecycle Controls:** 5-minute strict OTP expiration, maximum 5 attempts before challenge invalidation, and 60-second resend cooldown timer.
+- **Single-Use Replay Prevention:** Verified OTPs are immediately marked `is_consumed = TRUE` within atomic database transactions.
+- **Strict Login Gatekeeping:** Login strictly verifies `is_verified = TRUE`. Unverified accounts are rejected with 403 Forbidden and interactive verification prompting.
+- **Anti-Enumeration Protection:** Password reset requests return generic confirmation responses to avoid user email discovery.
+- **Rate Limiting:** Protects against credential stuffing, brute-force login attempts, and OTP email bombing using `express-rate-limit`.
+- **Credential Protection:** Secrets and credentials are never logged to stdout, persisted in plaintext, or transmitted to frontend bundles.
+- **Legacy Account Preservation:** Existing database users and appointments are safely backfilled with verified status, ensuring zero downtime or data loss for legacy records.
+- **Database Concurrency Controls:** Atomic slot reservation with `SELECT ... FOR UPDATE` and DB-level partial unique index constraints prevent double bookings.
 
 **Production hardening still required:** Review payment ownership and order verification, authenticate and authorize Socket.IO room membership, configure restricted CORS origins, and add comprehensive automated tests before handling real patient information or payments.
 

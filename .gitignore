@@ -8,6 +8,8 @@ node_modules/
 # Environment files
 .env
 .env.*
+!.env.example
+*.env.local
 server/.env
 client/.env
 

@@ -19,10 +19,14 @@ exports.protect = async (req, res, next) => {
     const jwtSecret = (process.env.JWT_SECRET || '').trim();
     const decoded = jwt.verify(token, jwtSecret);
 
-    // Verify if user is blocked in the database
-    const userRes = await pool.query('SELECT is_blocked FROM users WHERE id = $1', [decoded.id]);
+    // Verify if user is blocked or unverified in the database
+    const userRes = await pool.query('SELECT is_blocked, is_verified FROM users WHERE id = $1', [decoded.id]);
     if (userRes.rows.length === 0 || userRes.rows[0].is_blocked) {
       return res.status(403).json({ message: 'User is blocked or does not exist' });
+    }
+
+    if (userRes.rows[0].is_verified === false) {
+      return res.status(403).json({ message: 'User email is not verified. Please verify your account.' });
     }
 
     req.user = decoded; // { id, role }
